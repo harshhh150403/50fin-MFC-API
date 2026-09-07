@@ -7,8 +7,18 @@ import re
 from typing import Any
 
 import httpx
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+
+from transforms import (
+    COLUMN_LABELS,
+    HOLDING_COLUMNS,
+    REPEATED_VALUE_COLUMNS,
+    HoldingsDataError,
+    build_holdings_dataframe,
+    filter_holdings,
+)
 
 
 PAN_PATTERN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
@@ -152,6 +162,100 @@ def render_investor_summary(payload: dict[str, Any]) -> None:
         st.caption(f"Result code {code} · {detail}")
 
 
+RAW_FILTER_KEYS = (
+    "raw_sort_by",
+    "raw_sort_direction",
+    "raw_search",
+    "raw_rtaName",
+    "raw_amc",
+    "raw_schemeName",
+    "raw_folio",
+)
+
+
+def clear_raw_filters() -> None:
+    for key in RAW_FILTER_KEYS:
+        st.session_state.pop(key, None)
+
+
+def _filter_options(dataframe: pd.DataFrame, column: str) -> list[Any]:
+    values = dataframe[column].dropna().unique().tolist()
+    return sorted(values, key=lambda value: str(value).casefold())
+
+
+def render_holdings_table(dataframe: pd.DataFrame) -> None:
+    st.subheader("Holdings")
+    st.button(
+        "Clear filters",
+        key="raw_clear_filters",
+        on_click=clear_raw_filters,
+    )
+
+    sort_columns = st.columns([2, 2, 3])
+    with sort_columns[0]:
+        sort_by = st.selectbox(
+            "Sort by",
+            options=HOLDING_COLUMNS,
+            format_func=lambda column: COLUMN_LABELS[column],
+            key="raw_sort_by",
+        )
+    with sort_columns[1]:
+        sort_direction = st.radio(
+            "Direction",
+            options=("Ascending", "Descending"),
+            horizontal=True,
+            key="raw_sort_direction",
+        )
+    with sort_columns[2]:
+        search_text = st.text_input(
+            "Search all holdings",
+            placeholder="Paste an ISIN or enter part of a scheme name",
+            key="raw_search",
+        )
+
+    filter_columns = st.columns(4)
+    selected_values: dict[str, list[Any]] = {}
+    for container, column in zip(filter_columns, REPEATED_VALUE_COLUMNS):
+        with container:
+            selected_values[column] = st.multiselect(
+                COLUMN_LABELS[column],
+                options=_filter_options(dataframe, column),
+                key=f"raw_{column}",
+            )
+
+    filtered = filter_holdings(
+        dataframe,
+        search_text=search_text,
+        selected_values=selected_values,
+        sort_by=sort_by,
+        ascending=sort_direction == "Ascending",
+    )
+    st.caption(f"{len(filtered):,} of {len(dataframe):,} holdings")
+
+    display_dataframe = filtered.rename(columns=COLUMN_LABELS)
+    st.dataframe(
+        display_dataframe,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            COLUMN_LABELS["lienHoldUnits"]: st.column_config.NumberColumn(
+                COLUMN_LABELS["lienHoldUnits"], format="%.4f"
+            ),
+            COLUMN_LABELS["TotalLienUnits"]: st.column_config.NumberColumn(
+                COLUMN_LABELS["TotalLienUnits"], format="%.4f"
+            ),
+        },
+    )
+    st.download_button(
+        "Download filtered holdings as CSV",
+        data=display_dataframe.to_csv(index=False).encode("utf-8"),
+        file_name="mfc_lien_holdings.csv",
+        mime="text/csv",
+        key="raw_csv_download",
+        disabled=display_dataframe.empty,
+    )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="MFC lien holdings",
@@ -196,6 +300,7 @@ def main() -> None:
             with st.spinner("Requesting lien holdings…"):
                 try:
                     st.session_state["lookup_result"] = submit_lookup(pan, mobile)
+                    clear_raw_filters()
                 except FrontendRequestError as exc:
                     st.session_state["lookup_error"] = str(exc)
 
@@ -206,6 +311,18 @@ def main() -> None:
     if isinstance(result, dict):
         st.divider()
         render_investor_summary(result)
+        try:
+            holdings = build_holdings_dataframe(result)
+        except HoldingsDataError as exc:
+            st.error(
+                f"The MFC API returned holdings in an unexpected format: {exc} "
+                "Check the upstream service before submitting again."
+            )
+        else:
+            if holdings.empty:
+                st.info("This PAN has no lien holdings.")
+            else:
+                render_holdings_table(holdings)
 
 
 if __name__ == "__main__":
