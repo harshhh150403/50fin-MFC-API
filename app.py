@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable, Sequence
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -12,11 +14,19 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from transforms import (
+    AGGREGATED_COLUMNS,
+    AGGREGATED_COLUMN_LABELS,
+    AGGREGATED_NUMERIC_COLUMNS,
     COLUMN_LABELS,
     HOLDING_COLUMNS,
+    NUMERIC_COLUMNS,
     REPEATED_VALUE_COLUMNS,
+    SOURCE_ROW_COUNT_COLUMN,
+    AggregationResult,
     HoldingsDataError,
+    aggregate_holdings,
     build_holdings_dataframe,
+    filter_aggregated_holdings,
     filter_holdings,
 )
 
@@ -154,26 +164,21 @@ def render_investor_summary(payload: dict[str, Any]) -> None:
                 st.markdown(f"**{_display_value(value)}**")
 
 
-RAW_FILTER_KEYS = (
-    "raw_sort_by",
-    "raw_sort_direction",
-    "raw_search",
-    "raw_rtaName",
-    "raw_amc",
-    "raw_schemeName",
-    "raw_folio",
+FILTER_KEY_SUFFIXES = (
+    "sort_by",
+    "sort_direction",
+    "search",
+    *REPEATED_VALUE_COLUMNS,
 )
 
-SORT_OPTIONS: list[str | None] = [
-    None,
-    "isin",
-    *(column for column in HOLDING_COLUMNS if column != "isin"),
-]
+
+def clear_table_filters(key_prefix: str) -> None:
+    for suffix in FILTER_KEY_SUFFIXES:
+        st.session_state.pop(f"{key_prefix}_{suffix}", None)
 
 
 def clear_raw_filters() -> None:
-    for key in RAW_FILTER_KEYS:
-        st.session_state.pop(key, None)
+    clear_table_filters("raw")
 
 
 def _filter_options(dataframe: pd.DataFrame, column: str) -> list[Any]:
@@ -181,37 +186,53 @@ def _filter_options(dataframe: pd.DataFrame, column: str) -> list[Any]:
     return sorted(values, key=lambda value: str(value).casefold())
 
 
-def render_holdings_table(dataframe: pd.DataFrame) -> None:
-    st.subheader("Holdings")
+def _sort_options(columns: Sequence[str]) -> list[str | None]:
+    return [None, "isin", *(column for column in columns if column != "isin")]
+
+
+def render_filterable_table(
+    dataframe: pd.DataFrame,
+    *,
+    heading: str | None,
+    key_prefix: str,
+    columns: Sequence[str],
+    labels: dict[str, str],
+    numeric_columns: Sequence[str],
+    filter_function: Callable[..., pd.DataFrame],
+    row_label: str,
+    download_label: str,
+    file_name: str,
+) -> None:
+    if heading:
+        st.subheader(heading)
     st.button(
         "Clear filters",
-        key="raw_clear_filters",
-        on_click=clear_raw_filters,
+        key=f"{key_prefix}_clear_filters",
+        on_click=clear_table_filters,
+        args=(key_prefix,),
     )
 
     sort_columns = st.columns([2, 2, 3])
     with sort_columns[0]:
         sort_by = st.selectbox(
             "Sort by",
-            options=SORT_OPTIONS,
-            format_func=lambda column: (
-                "Select" if column is None else COLUMN_LABELS[column]
-            ),
-            key="raw_sort_by",
+            options=_sort_options(columns),
+            format_func=lambda column: "Select" if column is None else labels[column],
+            key=f"{key_prefix}_sort_by",
         )
     with sort_columns[1]:
         sort_direction = st.radio(
             "Direction",
             options=("Ascending", "Descending"),
             horizontal=True,
-            key="raw_sort_direction",
+            key=f"{key_prefix}_sort_direction",
             disabled=sort_by is None,
         )
     with sort_columns[2]:
         search_text = st.text_input(
             "Search all holdings",
             placeholder="Paste an ISIN or enter part of a scheme name",
-            key="raw_search",
+            key=f"{key_prefix}_search",
         )
 
     filter_columns = st.columns(4)
@@ -219,46 +240,120 @@ def render_holdings_table(dataframe: pd.DataFrame) -> None:
     for container, column in zip(filter_columns, REPEATED_VALUE_COLUMNS):
         with container:
             selected_values[column] = st.multiselect(
-                COLUMN_LABELS[column],
+                labels[column],
                 options=_filter_options(dataframe, column),
-                key=f"raw_{column}",
+                key=f"{key_prefix}_{column}",
             )
 
-    filtered = filter_holdings(
+    filtered = filter_function(
         dataframe,
         search_text=search_text,
         selected_values=selected_values,
         sort_by=sort_by,
         ascending=sort_direction == "Ascending",
     )
-    st.caption(f"{len(filtered):,} of {len(dataframe):,} holdings")
+    st.caption(f"{len(filtered):,} of {len(dataframe):,} {row_label}")
 
-    export_dataframe = filtered.rename(columns=COLUMN_LABELS).copy()
+    export_dataframe = filtered.rename(columns=labels).copy()
     display_dataframe = export_dataframe.copy()
     display_dataframe.insert(0, "Index", range(1, len(display_dataframe) + 1))
+    column_config: dict[str, Any] = {
+        "Index": st.column_config.NumberColumn("Index", format="%d", width="small")
+    }
+    for column in numeric_columns:
+        label = labels[column]
+        number_format = "%d" if column == SOURCE_ROW_COUNT_COLUMN else "%.4f"
+        column_config[label] = st.column_config.NumberColumn(
+            label,
+            format=number_format,
+        )
     st.dataframe(
         display_dataframe,
         hide_index=True,
         use_container_width=True,
-        column_config={
-            "Index": st.column_config.NumberColumn(
-                "Index", format="%d", width="small"
-            ),
-            COLUMN_LABELS["lienHoldUnits"]: st.column_config.NumberColumn(
-                COLUMN_LABELS["lienHoldUnits"], format="%.4f"
-            ),
-            COLUMN_LABELS["TotalLienUnits"]: st.column_config.NumberColumn(
-                COLUMN_LABELS["TotalLienUnits"], format="%.4f"
-            ),
-        },
+        column_config=column_config,
     )
     st.download_button(
-        "Download filtered holdings as CSV",
+        download_label,
         data=export_dataframe.to_csv(index=False).encode("utf-8"),
-        file_name="mfc_lien_holdings.csv",
+        file_name=file_name,
         mime="text/csv",
-        key="raw_csv_download",
+        key=f"{key_prefix}_csv_download",
         disabled=export_dataframe.empty,
+    )
+
+
+def render_holdings_table(dataframe: pd.DataFrame) -> None:
+    render_filterable_table(
+        dataframe,
+        heading="Holdings",
+        key_prefix="raw",
+        columns=HOLDING_COLUMNS,
+        labels=COLUMN_LABELS,
+        numeric_columns=NUMERIC_COLUMNS,
+        filter_function=filter_holdings,
+        row_label="holdings",
+        download_label="Download filtered holdings as CSV",
+        file_name="mfc_lien_holdings.csv",
+    )
+
+
+def _format_units(total: Decimal) -> str:
+    return f"{total:,.4f}"
+
+
+def render_aggregated_holdings(result: AggregationResult) -> None:
+    st.divider()
+    st.subheader("Aggregated holdings")
+    total_columns = st.columns(2)
+    total_columns[0].metric(
+        "Raw lien hold units",
+        _format_units(result.raw_units_total),
+    )
+    total_columns[1].metric(
+        "Aggregated lien hold units",
+        _format_units(result.aggregated_units_total),
+    )
+
+    if result.units_preserved:
+        st.caption("Unit check passed: aggregation preserved the full units total.")
+    else:
+        st.error(
+            "Unit check failed: raw and aggregated lien hold units do not match. "
+            "Review the source data before using this table."
+        )
+
+    if result.null_grouping_rows:
+        row_word = "row" if result.null_grouping_rows == 1 else "rows"
+        verb = "has" if result.null_grouping_rows == 1 else "have"
+        retention = "It was" if result.null_grouping_rows == 1 else "They were"
+        st.warning(
+            f"{result.null_grouping_rows:,} source {row_word} {verb} at least one missing "
+            f"grouping key. {retention} retained in the aggregated table."
+        )
+    else:
+        st.caption("Source rows with a missing grouping key: 0.")
+
+    if result.inconsistent_total_groups:
+        group_word = (
+            "group" if result.inconsistent_total_groups == 1 else "groups"
+        )
+        st.warning(
+            f"Total lien units varies within {result.inconsistent_total_groups:,} "
+            f"aggregated {group_word}. The first value in each group was retained."
+        )
+
+    render_filterable_table(
+        result.dataframe,
+        heading=None,
+        key_prefix="aggregated",
+        columns=AGGREGATED_COLUMNS,
+        labels=AGGREGATED_COLUMN_LABELS,
+        numeric_columns=AGGREGATED_NUMERIC_COLUMNS,
+        filter_function=filter_aggregated_holdings,
+        row_label="aggregated holdings",
+        download_label="Download filtered aggregation as CSV",
+        file_name="mfc_aggregated_lien_holdings.csv",
     )
 
 
@@ -307,6 +402,7 @@ def main() -> None:
                 try:
                     st.session_state["lookup_result"] = submit_lookup(pan, mobile)
                     clear_raw_filters()
+                    clear_table_filters("aggregated")
                 except FrontendRequestError as exc:
                     st.session_state["lookup_error"] = str(exc)
 
@@ -329,6 +425,7 @@ def main() -> None:
                 st.info("This PAN has no lien holdings.")
             else:
                 render_holdings_table(holdings)
+                render_aggregated_holdings(aggregate_holdings(holdings))
 
 
 if __name__ == "__main__":
