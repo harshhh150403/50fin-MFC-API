@@ -172,6 +172,12 @@ RAW_FILTER_KEYS = (
     "raw_folio",
 )
 
+SORT_OPTIONS: list[str | None] = [
+    None,
+    "isin",
+    *(column for column in HOLDING_COLUMNS if column != "isin"),
+]
+
 
 def clear_raw_filters() -> None:
     for key in RAW_FILTER_KEYS:
@@ -195,8 +201,10 @@ def render_holdings_table(dataframe: pd.DataFrame) -> None:
     with sort_columns[0]:
         sort_by = st.selectbox(
             "Sort by",
-            options=HOLDING_COLUMNS,
-            format_func=lambda column: COLUMN_LABELS[column],
+            options=SORT_OPTIONS,
+            format_func=lambda column: (
+                "Select" if column is None else COLUMN_LABELS[column]
+            ),
             key="raw_sort_by",
         )
     with sort_columns[1]:
@@ -205,6 +213,7 @@ def render_holdings_table(dataframe: pd.DataFrame) -> None:
             options=("Ascending", "Descending"),
             horizontal=True,
             key="raw_sort_direction",
+            disabled=sort_by is None,
         )
     with sort_columns[2]:
         search_text = st.text_input(
@@ -232,12 +241,17 @@ def render_holdings_table(dataframe: pd.DataFrame) -> None:
     )
     st.caption(f"{len(filtered):,} of {len(dataframe):,} holdings")
 
-    display_dataframe = filtered.rename(columns=COLUMN_LABELS)
+    export_dataframe = filtered.rename(columns=COLUMN_LABELS).copy()
+    display_dataframe = export_dataframe.copy()
+    display_dataframe.insert(0, "Index", range(1, len(display_dataframe) + 1))
     st.dataframe(
         display_dataframe,
         hide_index=True,
         use_container_width=True,
         column_config={
+            "Index": st.column_config.NumberColumn(
+                "Index", format="%d", width="small"
+            ),
             COLUMN_LABELS["lienHoldUnits"]: st.column_config.NumberColumn(
                 COLUMN_LABELS["lienHoldUnits"], format="%.4f"
             ),
@@ -248,11 +262,11 @@ def render_holdings_table(dataframe: pd.DataFrame) -> None:
     )
     st.download_button(
         "Download filtered holdings as CSV",
-        data=display_dataframe.to_csv(index=False).encode("utf-8"),
+        data=export_dataframe.to_csv(index=False).encode("utf-8"),
         file_name="mfc_lien_holdings.csv",
         mime="text/csv",
         key="raw_csv_download",
-        disabled=display_dataframe.empty,
+        disabled=export_dataframe.empty,
     )
 
 

@@ -71,12 +71,12 @@ def filter_holdings(
     *,
     search_text: str = "",
     selected_values: Mapping[str, Sequence[Any]] | None = None,
-    sort_by: str = "rtaName",
+    sort_by: str | None = None,
     ascending: bool = True,
 ) -> pd.DataFrame:
     """Return a filtered and sorted copy without mutating the raw dataframe."""
 
-    if sort_by not in HOLDING_COLUMNS:
+    if sort_by is not None and sort_by not in HOLDING_COLUMNS:
         raise ValueError(f"Unknown holdings sort column: {sort_by}")
 
     filtered = dataframe.copy(deep=True)
@@ -93,7 +93,7 @@ def filter_holdings(
         if values:
             filtered = filtered.loc[filtered[column].isin(values)].copy()
 
-    if filtered.empty:
+    if filtered.empty or sort_by is None:
         return filtered.reset_index(drop=True)
 
     if sort_by in NUMERIC_COLUMNS:
