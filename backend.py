@@ -112,14 +112,7 @@ def _response_code(payload: dict[str, Any]) -> int | None:
     return None
 
 
-def _payload_detail(payload: dict[str, Any]) -> str:
-    detail = payload.get("detail")
-    if isinstance(detail, str) and detail.strip():
-        return detail.strip()
-    return "The MFC API returned an unsuccessful response."
-
-
-def _upstream_http_error(status_code: int, detail: str = "") -> HTTPException:
+def _upstream_http_error(status_code: int) -> HTTPException:
     if status_code == status.HTTP_401_UNAUTHORIZED:
         return HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -138,7 +131,10 @@ def _upstream_http_error(status_code: int, detail: str = "") -> HTTPException:
         )
     return HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
-        detail=detail or f"The MFC API rejected the request (code {status_code}).",
+        detail=(
+            f"The MFC API rejected the request (code {status_code}). Check the "
+            "upstream service before submitting again."
+        ),
     )
 
 
@@ -180,7 +176,7 @@ async def get_lien_holdings(lookup: LienLookupRequest) -> dict[str, Any]:
             ),
         ) from exc
     except MFCResponseError as exc:
-        raise _upstream_http_error(exc.status_code, exc.detail) from exc
+        raise _upstream_http_error(exc.status_code) from exc
 
     response_code = _response_code(payload)
     if response_code != status.HTTP_200_OK:
@@ -192,6 +188,6 @@ async def get_lien_holdings(lookup: LienLookupRequest) -> dict[str, Any]:
                     "upstream service before submitting again."
                 ),
             )
-        raise _upstream_http_error(response_code, _payload_detail(payload))
+        raise _upstream_http_error(response_code)
 
     return payload

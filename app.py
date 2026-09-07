@@ -61,12 +61,22 @@ def normalise_mobile(value: str) -> tuple[str | None, str | None]:
     return normalised, None
 
 
-def _backend_settings() -> tuple[str, float]:
+def _backend_settings() -> tuple[str, float, str, str]:
     load_dotenv()
     backend_url = os.getenv("BACKEND_API_URL", "").strip().rstrip("/")
     if not backend_url:
         raise FrontendRequestError(
             "BACKEND_API_URL is missing. Add it to .env, then restart Streamlit."
+        )
+    try:
+        parsed_url = httpx.URL(backend_url)
+    except httpx.InvalidURL as exc:
+        raise FrontendRequestError(
+            "BACKEND_API_URL is invalid. Enter a complete HTTP or HTTPS URL in .env."
+        ) from exc
+    if parsed_url.scheme not in ("http", "https") or not parsed_url.host:
+        raise FrontendRequestError(
+            "BACKEND_API_URL is invalid. Enter a complete HTTP or HTTPS URL in .env."
         )
 
     raw_timeout = os.getenv("BACKEND_REQUEST_TIMEOUT_SECONDS", "30")
@@ -80,7 +90,19 @@ def _backend_settings() -> tuple[str, float]:
         raise FrontendRequestError(
             "BACKEND_REQUEST_TIMEOUT_SECONDS must be greater than zero in .env."
         )
-    return backend_url, timeout
+
+    backend_host = os.getenv("BACKEND_HOST", "").strip()
+    backend_port = os.getenv("BACKEND_PORT", "").strip()
+    if not backend_host or not backend_port:
+        raise FrontendRequestError(
+            "BACKEND_HOST and BACKEND_PORT are missing. Add them to .env, then restart "
+            "Streamlit."
+        )
+    if not backend_port.isdigit() or not 1 <= int(backend_port) <= 65535:
+        raise FrontendRequestError(
+            "BACKEND_PORT must be a whole number from 1 to 65535 in .env."
+        )
+    return backend_url, timeout, backend_host, backend_port
 
 
 def _response_detail(response: httpx.Response) -> str:
@@ -96,7 +118,7 @@ def _response_detail(response: httpx.Response) -> str:
 
 
 def submit_lookup(pan: str, mobile: str) -> dict[str, Any]:
-    backend_url, timeout = _backend_settings()
+    backend_url, timeout, backend_host, backend_port = _backend_settings()
     try:
         response = httpx.post(
             f"{backend_url}{LOOKUP_PATH}",
@@ -104,16 +126,17 @@ def submit_lookup(pan: str, mobile: str) -> dict[str, Any]:
             timeout=timeout,
         )
     except httpx.ConnectError as exc:
-        host = os.getenv("BACKEND_HOST", "127.0.0.1")
-        port = os.getenv("BACKEND_PORT", "8000")
         raise FrontendRequestError(
-            "The backend isn't running. Start it with: "
-            f".venv/bin/uvicorn backend:app --host {host} --port {port}"
+            f"The backend could not be reached at {backend_url}. Start it with: "
+            "python -m uvicorn backend:app "
+            f"--host {backend_host} --port {backend_port}. If it is already running, "
+            "check BACKEND_API_URL in .env."
         ) from exc
     except httpx.TimeoutException as exc:
         raise FrontendRequestError(
-            "The backend timed out. The request outcome is unknown and it was not "
-            "retried automatically."
+            "The backend timed out. The request outcome is unknown, so it was not "
+            "retried automatically. Check whether it was processed before submitting "
+            "again."
         ) from exc
     except httpx.RequestError as exc:
         raise FrontendRequestError(
@@ -127,7 +150,8 @@ def submit_lookup(pan: str, mobile: str) -> dict[str, Any]:
         payload = response.json()
     except ValueError as exc:
         raise FrontendRequestError(
-            "The backend returned an unexpected non-JSON response. Restart it and try again."
+            "The backend returned an unexpected non-JSON response. Check the backend "
+            "terminal for errors, then restart it."
         ) from exc
     if not isinstance(payload, dict):
         raise FrontendRequestError(
@@ -256,6 +280,10 @@ def render_filterable_table(
 
     export_dataframe = filtered.rename(columns=labels).copy()
     display_dataframe = export_dataframe.copy()
+    for column in columns:
+        if column not in numeric_columns:
+            label = labels[column]
+            display_dataframe.loc[:, label] = display_dataframe[label].fillna("—")
     display_dataframe.insert(0, "Index", range(1, len(display_dataframe) + 1))
     column_config: dict[str, Any] = {
         "Index": st.column_config.NumberColumn("Index", format="%d", width="small")
@@ -338,8 +366,9 @@ def render_aggregated_holdings(result: AggregationResult) -> None:
         group_word = (
             "group" if result.inconsistent_total_groups == 1 else "groups"
         )
+        verb = "varies" if result.inconsistent_total_groups == 1 else "vary"
         st.warning(
-            f"Total lien units varies within {result.inconsistent_total_groups:,} "
+            f"Total lien units {verb} within {result.inconsistent_total_groups:,} "
             f"aggregated {group_word}. The first value in each group was retained."
         )
 
@@ -361,6 +390,25 @@ def main() -> None:
     st.set_page_config(
         page_title="MFC lien holdings",
         layout="wide",
+    )
+    st.markdown(
+        """
+        <style>
+        button[kind="primary"],
+        button[kind="primaryFormSubmit"] {
+            background-color: #a83232 !important;
+            border-color: #a83232 !important;
+            color: #ffffff !important;
+        }
+        button[kind="primary"]:hover,
+        button[kind="primaryFormSubmit"]:hover {
+            background-color: #8f2929 !important;
+            border-color: #8f2929 !important;
+            color: #ffffff !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
     st.title("MFC lien holdings")
     st.write("Look up an investor's mutual fund lien holdings by PAN and mobile number.")
