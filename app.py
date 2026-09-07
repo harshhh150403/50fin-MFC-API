@@ -141,25 +141,17 @@ def render_investor_summary(payload: dict[str, Any]) -> None:
         return
 
     with st.container(border=True):
-        st.subheader(_display_value(investor.get("clientName")))
-        first_row = st.columns(3)
-        second_row = st.columns(3)
+        st.subheader("Investor details")
+        columns = st.columns(3)
         fields = (
             ("PAN", investor.get("pan")),
             ("Mobile", investor.get("mobile")),
             ("Email", investor.get("email")),
-            ("Client ID", investor.get("clientId")),
-            ("Lender code", investor.get("lenderCode")),
-            ("Request ID", investor.get("reqId")),
         )
-        for column, (label, value) in zip((*first_row, *second_row), fields):
+        for column, (label, value) in zip(columns, fields):
             with column:
                 st.caption(label)
                 st.markdown(f"**{_display_value(value)}**")
-
-        code = _display_value(payload.get("code"))
-        detail = _display_value(payload.get("detail"))
-        st.caption(f"Result code {code} · {detail}")
 
 
 RAW_FILTER_KEYS = (
