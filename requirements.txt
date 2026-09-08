@@ -1,6 +1,6 @@
 fastapi==0.115.12
 httpx==0.28.1
-pandas==2.2.3
+pandas>=2.2.3
 pydantic-settings==2.9.1
 python-dotenv==1.2.3
 streamlit==1.45.1
