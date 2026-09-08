@@ -54,6 +54,8 @@ def _configured_login_password() -> str | None:
 def passwords_match(provided: str, expected: str) -> bool:
     """Compare fixed-length password digests without exposing either password."""
 
+    if len(provided) > 256:
+        return False
     provided_digest = hashlib.sha256(provided.encode("utf-8")).digest()
     expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
     return hmac.compare_digest(provided_digest, expected_digest)
@@ -86,7 +88,11 @@ def render_login_gate() -> bool:
     st.subheader("Sign in")
     st.write("Enter the shared access password to continue.")
     with st.form("login_form", clear_on_submit=True):
-        password = st.text_input("Password", type="password", max_chars=256)
+        password = st.text_input(
+            "Password",
+            type="password",
+            autocomplete="off",
+        )
         submitted = st.form_submit_button(
             "Sign in",
             type="primary",
@@ -474,6 +480,9 @@ def main() -> None:
             border-color: #8f2929 !important;
             color: #ffffff !important;
         }
+        div[data-testid="InputInstructions"] {
+            display: none;
+        }
         @media (max-width: 640px) {
             div[data-testid="stTextInput"] input,
             div[data-testid="stTextInput"] button,
@@ -511,12 +520,14 @@ def main() -> None:
                 "PAN",
                 placeholder="ABCDE1234F",
                 help="Five letters, four digits, and one final letter.",
+                autocomplete="off",
             )
         with form_columns[1]:
             mobile_input = st.text_input(
                 "Mobile number",
                 placeholder="9876543210",
                 help="Ten digits starting with 6, 7, 8, or 9.",
+                autocomplete="off",
             )
         submitted = st.form_submit_button(
             "Look up holdings",
