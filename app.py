@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import re
 from collections.abc import Callable, Sequence
@@ -34,10 +36,76 @@ from transforms import (
 PAN_PATTERN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 MOBILE_PATTERN = re.compile(r"^[6-9][0-9]{9}$")
 LOOKUP_PATH = "/api/lien-holdings"
+LOGIN_PASSWORD_ENV = "APP_LOGIN_PASSWORD"
+AUTHENTICATED_SESSION_KEY = "authenticated"
+LOGIN_ERROR_SESSION_KEY = "login_error"
 
 
 class FrontendRequestError(Exception):
     """A readable backend-call failure safe to show in the UI."""
+
+
+def _configured_login_password() -> str | None:
+    load_dotenv()
+    password = os.getenv(LOGIN_PASSWORD_ENV)
+    return password if password and password.strip() else None
+
+
+def passwords_match(provided: str, expected: str) -> bool:
+    """Compare fixed-length password digests without exposing either password."""
+
+    provided_digest = hashlib.sha256(provided.encode("utf-8")).digest()
+    expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
+    return hmac.compare_digest(provided_digest, expected_digest)
+
+
+def log_out() -> None:
+    """Remove authentication and any cached investor data from this session."""
+
+    st.session_state.clear()
+
+
+def render_login_gate() -> bool:
+    """Render the shared-password gate and report whether access is allowed."""
+
+    expected_password = _configured_login_password()
+    if expected_password is None:
+        st.title("MFC lien holdings")
+        st.write("Secure access to the mutual fund lien holdings lookup.")
+        st.error(
+            "APP_LOGIN_PASSWORD is missing or blank. Add a strong shared password to "
+            ".env, then restart Streamlit."
+        )
+        return False
+
+    if st.session_state.get(AUTHENTICATED_SESSION_KEY) is True:
+        return True
+
+    st.title("MFC lien holdings")
+    st.write("Secure access to the mutual fund lien holdings lookup.")
+    st.subheader("Sign in")
+    st.write("Enter the shared access password to continue.")
+    with st.form("login_form", clear_on_submit=True):
+        password = st.text_input("Password", type="password", max_chars=256)
+        submitted = st.form_submit_button(
+            "Sign in",
+            type="primary",
+            use_container_width=False,
+        )
+
+    if submitted:
+        if passwords_match(password, expected_password):
+            st.session_state[AUTHENTICATED_SESSION_KEY] = True
+            st.session_state.pop(LOGIN_ERROR_SESSION_KEY, None)
+            st.rerun()
+        else:
+            st.session_state[LOGIN_ERROR_SESSION_KEY] = (
+                "Incorrect password. Check it and try again."
+            )
+
+    if st.session_state.get(LOGIN_ERROR_SESSION_KEY):
+        st.error(st.session_state[LOGIN_ERROR_SESSION_KEY])
+    return False
 
 
 def normalise_pan(value: str) -> tuple[str | None, str | None]:
@@ -406,11 +474,31 @@ def main() -> None:
             border-color: #8f2929 !important;
             color: #ffffff !important;
         }
+        @media (max-width: 640px) {
+            div[data-testid="stTextInput"] input,
+            div[data-testid="stTextInput"] button,
+            button[kind="primary"],
+            button[kind="primaryFormSubmit"],
+            button[kind="secondary"] {
+                min-height: 44px;
+            }
+            div[data-testid="stTextInput"] button {
+                min-width: 44px;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
-    st.title("MFC lien holdings")
+
+    if not render_login_gate():
+        return
+
+    title_columns = st.columns([6, 1])
+    with title_columns[0]:
+        st.title("MFC lien holdings")
+    with title_columns[1]:
+        st.button("Log out", on_click=log_out, use_container_width=True)
     st.write("Look up an investor's mutual fund lien holdings by PAN and mobile number.")
 
     st.session_state.setdefault("lookup_result", None)

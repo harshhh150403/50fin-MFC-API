@@ -1,8 +1,8 @@
 # 50fin MFC API
 
-An internal web tool for looking up an investor's mutual fund lien holdings by PAN and mobile number. It shows the raw holdings returned by the MFC API and an audited aggregation of those holdings.
+An internal, shared-password-protected web tool for looking up an investor's mutual fund lien holdings by PAN and mobile number. It shows the raw holdings returned by the MFC API and an audited aggregation of those holdings.
 
-The tool has no login, user accounts, or database. It runs as two local processes:
+The tool has no individual user accounts or database. It runs as two local processes:
 
 - FastAPI validates input and makes the upstream MFC API request.
 - Streamlit provides the form, investor details, filters, tables, and CSV downloads.
@@ -11,6 +11,7 @@ The tool has no login, user accounts, or database. It runs as two local processe
 
 - Python 3.11 or newer
 - Valid MFC API client credentials
+- A strong shared password for access to the Streamlit app
 - Network access to the configured MFC API base URL
 
 ## Install
@@ -39,13 +40,15 @@ If `.env` already exists, do not overwrite it.
 
 ## Configure `.env`
 
-Open `.env` and replace only the dummy MFC values with the real values supplied by the API provider:
+Open `.env`, replace the dummy MFC values with the real values supplied by the API provider, and choose a strong shared app password:
 
 ```dotenv
 MFC_BASE_URL=https://api.example.com
 MFC_CLIENT_ID=replace-with-client-id
 MFC_CLIENT_SECRET=replace-with-client-secret
 MFC_REQUEST_TIMEOUT_SECONDS=30
+
+APP_LOGIN_PASSWORD=replace-with-a-strong-shared-password
 
 BACKEND_API_URL=http://127.0.0.1:8000
 BACKEND_REQUEST_TIMEOUT_SECONDS=30
@@ -56,7 +59,9 @@ STREAMLIT_SERVER_ADDRESS=127.0.0.1
 STREAMLIT_SERVER_PORT=8501
 ```
 
-`MFC_BASE_URL` is the upstream provider URL. `BACKEND_API_URL` is the URL Streamlit uses to reach FastAPI. The host and port values control where the two local processes listen.
+`MFC_BASE_URL` is the upstream provider URL. `APP_LOGIN_PASSWORD` is the shared password required before the lookup form is shown. `BACKEND_API_URL` is the URL Streamlit uses to reach FastAPI. The host and port values control where the two local processes listen.
+
+Choose a long, unique value for `APP_LOGIN_PASSWORD`. Do not reuse an email, workstation, API, or personal password.
 
 Never commit `.env`. The Postman collection and `.env` are both ignored by Git.
 
@@ -138,10 +143,12 @@ If required credentials are absent or blank, FastAPI stops during startup with a
 
 ## Use the tool
 
-1. Enter the investor's PAN and mobile number.
-2. Click **Look up holdings**. No request is made while typing or changing filters.
-3. Review the raw holdings and the aggregated holdings.
-4. Use each table's independent filters or download its current filtered rows as CSV.
+1. Enter the shared password and click **Sign in**.
+2. Enter the investor's PAN and mobile number.
+3. Click **Look up holdings**. No request is made while typing or changing filters.
+4. Review the raw holdings and the aggregated holdings.
+5. Use each table's independent filters or download its current filtered rows as CSV.
+6. Click **Log out** when finished. Logging out clears the cached investor response and filters from that browser session.
 
 The aggregation groups rows on `isin`, `folio`, `lienSubRefNo`, and `lienRefNo`. It sums `lienHoldUnits`, retains the first descriptive and `TotalLienUnits` values, and shows the number of source rows. The page warns about missing grouping keys or inconsistent `TotalLienUnits` values and confirms that aggregation preserved the complete units total.
 
@@ -157,9 +164,17 @@ The upstream POST may have server-side effects. The tool never retries automatic
 
 No source-code change is required. Do not place credentials in Python files, Git history, screenshots, logs, or issue descriptions.
 
+To rotate the shared app password, stop Streamlit, update `APP_LOGIN_PASSWORD` in `.env`, and restart Streamlit using the full startup steps above—including loading `.env` into that terminal again. Alternatively, restart it from a fresh terminal. This prevents an older value exported in the current shell from taking precedence. Restarting invalidates existing authenticated sessions.
+
+## Login scope
+
+This is a basic shared-password gate intended for a small internal tool. It does not provide individual identities, password recovery, audit history, role-based access, or brute-force protection. It protects the Streamlit interface, not a FastAPI endpoint exposed directly on the network. Keep the backend restricted to the trusted internal environment. Before exposing the tool more broadly, put it behind your organisation's SSO or another production authentication layer.
+
 ## Troubleshooting
 
 - **Backend unavailable:** Start FastAPI using the command above. If it is already running, confirm `BACKEND_API_URL` matches its address.
+- **Login password not configured:** Add a non-empty `APP_LOGIN_PASSWORD` to `.env`, then restart Streamlit.
+- **Incorrect login password:** Confirm the shared password with the tool owner and try again. Passwords are case-sensitive.
 - **Timeout:** The outcome is unknown. Check the backend and provider status before deciding whether to submit again.
 - **Credentials rejected:** Verify `MFC_CLIENT_ID` and `MFC_CLIENT_SECRET`, then restart FastAPI.
 - **PAN or mobile rejected:** Correct the format shown beneath the form fields and submit again.
